@@ -1,3 +1,4 @@
+import { CONFIG } from "./config";
 import type { HoverLensRefs, HoverLensState } from "./types";
 
 export const state: HoverLensState = {
@@ -20,9 +21,13 @@ export const state: HoverLensState = {
   lastCtrlKeydownAt: 0,
 
   globalEventsBound: false,
+  aiPanelOpen: false,
+  aiConfig: { ...CONFIG.defaultAiConfig },
 };
 
 export const refs: HoverLensRefs = {
   overlay: null,
   image: null,
+  aiPanel: null,
+  aiPanelToggle: null,
 };

@@ -24,6 +24,22 @@ export const CONFIG: HoverLensConfig = {
   styleId: "hl-tm-style",
   overlayId: "hl-tm-overlay",
 
+  aiPanelId: "hl-tm-ai-panel",
+  aiPanelToggleId: "hl-tm-ai-toggle",
+  aiPanelStyleId: "hl-tm-ai-style",
+  aiConfigStorageKey: "__HOVERLENS_AI_CONFIG__",
+  defaultAiConfig: {
+    enabled: false,
+    apiFormat: "google-genai",
+    provider: "google",
+    baseUrl: "https://generativelanguage.googleapis.com",
+    apiKey: "",
+    model: "gemini-3-flash-preview",
+    temperature: 0.7,
+    systemPrompt: "你是一个专业、可靠的 AI 助手。",
+    enableGoogleSearchGrounding: true,
+  },
+
   // 可扩展：用于把缩略图 URL 映射成原图 URL（当前默认透传）
   // imageUrlResolverHook: (url, context) => url
   imageUrlResolverHook: null,

@@ -7,9 +7,6 @@ import { logDebug } from "./utils";
   if (globalWindow[INSTALL_GUARD_KEY]) return;
   globalWindow[INSTALL_GUARD_KEY] = true;
 
-  // 如需在 iframe 内也生效，可删除此判断
-  if (window.top !== window.self) return;
-
   try {
     bootstrapHoverLens();
   } catch (error) {
