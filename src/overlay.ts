@@ -73,6 +73,9 @@ export function resetTransform(): void {
 
   if (refs.overlay) refs.overlay.classList.remove("is-dragging");
   if (refs.image) refs.image.style.cursor = "grab";
+
+  // 关闭或切换图片时立即把样式同步回默认缩放/位移
+  applyTransform();
 }
 
 export function closePreview(): void {
@@ -167,7 +170,6 @@ function createImageElement(): HTMLImageElement {
   image.addEventListener("dblclick", (event) => {
     event.preventDefault();
     resetTransform();
-    applyTransform();
   });
   image.addEventListener("dragstart", (event) => event.preventDefault());
 
@@ -225,6 +227,4 @@ export function openPreview(imageUrl: string): void {
   refs.image.src = finalUrl;
   refs.overlay.classList.add("is-open");
   refs.overlay.setAttribute("aria-hidden", "false");
-
-  applyTransform();
 }
