@@ -1,6 +1,6 @@
-import type { HoverLensConfig } from './types';
+import type { HoverLensConfig } from "./types";
 
-export const INSTALL_GUARD_KEY = '__HOVERLENS_TM_INSTALLED__' as const;
+export const INSTALL_GUARD_KEY = "__HOVERLENS_TM_INSTALLED__" as const;
 
 export const CONFIG: HoverLensConfig = {
   debug: false,
@@ -21,21 +21,21 @@ export const CONFIG: HoverLensConfig = {
   overlayZIndex: 2147483646,
   animationDurationMs: 140,
 
-  styleId: 'hl-tm-style',
-  overlayId: 'hl-tm-overlay',
+  styleId: "hl-tm-style",
+  overlayId: "hl-tm-overlay",
 
   // 可扩展：用于把缩略图 URL 映射成原图 URL（当前默认透传）
   // imageUrlResolverHook: (url, context) => url
   imageUrlResolverHook: null,
 
   editorBlockSelectors: [
-    '.monaco-editor',
-    '.monaco-workbench',
-    '.CodeMirror',
-    '.cm-editor',
-    '.ace_editor',
-    '.ql-editor',
-    '.ProseMirror',
+    ".monaco-editor",
+    ".monaco-workbench",
+    ".CodeMirror",
+    ".cm-editor",
+    ".ace_editor",
+    ".ql-editor",
+    ".ProseMirror",
     '[data-testid*="editor"]',
     '[class*="monaco-editor"]',
     '[class*="CodeMirror"]',

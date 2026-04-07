@@ -1,6 +1,6 @@
-import { INSTALL_GUARD_KEY } from "./hoverlens/config";
-import { bootstrapHoverLens } from "./hoverlens/runtime";
-import { logDebug } from "./hoverlens/utils";
+import { INSTALL_GUARD_KEY } from "./config";
+import { bootstrapHoverLens } from "./runtime";
+import { logDebug } from "./utils";
 
 (() => {
   const globalWindow = window as unknown as Record<string, unknown>;

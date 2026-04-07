@@ -1,4 +1,4 @@
-import type { HoverLensRefs, HoverLensState } from './types';
+import type { HoverLensRefs, HoverLensState } from "./types";
 
 export const state: HoverLensState = {
   hoveredElement: null,
@@ -16,7 +16,7 @@ export const state: HoverLensState = {
   startTranslateX: 0,
   startTranslateY: 0,
 
-  activeImageUrl: '',
+  activeImageUrl: "",
   lastCtrlKeydownAt: 0,
 
   globalEventsBound: false,
