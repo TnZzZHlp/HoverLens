@@ -12,6 +12,7 @@ export const state: HoverLensState = {
   translateY: 0,
 
   dragging: false,
+  activeDragPointerId: null,
   dragStartX: 0,
   dragStartY: 0,
   startTranslateX: 0,

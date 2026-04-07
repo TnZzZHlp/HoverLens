@@ -378,12 +378,19 @@ function ensureStyle(): void {
   cursor: grab;
   user-select: none;
   -webkit-user-drag: none;
-  will-change: transform;
+  touch-action: none;
 }
 
 #${CONFIG.overlayId}.is-dragging .hl-tm-preview-image {
   cursor: grabbing;
   transition: none !important;
+  will-change: transform;
+  box-shadow: none;
+}
+
+#${CONFIG.overlayId}.is-dragging .hl-tm-ai-pill {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 #${CONFIG.overlayId} .hl-tm-ai-tools {
@@ -606,10 +613,22 @@ export function applyTransform(): void {
 export function resetTransform(): void {
   cancelScheduledDragTransform();
 
+  const dragPointerId = state.activeDragPointerId;
+  if (refs.image && dragPointerId !== null) {
+    try {
+      if (refs.image.hasPointerCapture(dragPointerId)) {
+        refs.image.releasePointerCapture(dragPointerId);
+      }
+    } catch (error) {
+      logDebug("resetTransform 释放 pointer capture 失败：", error);
+    }
+  }
+
   state.scale = 1;
   state.translateX = 0;
   state.translateY = 0;
   state.dragging = false;
+  state.activeDragPointerId = null;
 
   if (refs.overlay) refs.overlay.classList.remove("is-dragging");
   if (refs.image) refs.image.style.cursor = "grab";
@@ -676,14 +695,18 @@ export function handleWheelZoom(event: WheelEvent): void {
   applyTransform();
 }
 
-export function handleDragStart(event: MouseEvent): void {
+export function handleDragStart(event: PointerEvent): void {
   if (!state.isOpen || !refs.image) return;
-  if (event.button !== 0) return; // 仅左键拖动
+
+  // 鼠标仅允许左键，触控/触笔放行
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  if (state.activeDragPointerId !== null && state.activeDragPointerId !== event.pointerId) return;
 
   event.preventDefault();
   cancelScheduledDragTransform();
 
   state.dragging = true;
+  state.activeDragPointerId = event.pointerId;
   state.dragStartX = event.clientX;
   state.dragStartY = event.clientY;
   state.startTranslateX = state.translateX;
@@ -691,10 +714,17 @@ export function handleDragStart(event: MouseEvent): void {
 
   if (refs.overlay) refs.overlay.classList.add("is-dragging");
   refs.image.style.cursor = "grabbing";
+
+  try {
+    refs.image.setPointerCapture(event.pointerId);
+  } catch (error) {
+    logDebug("setPointerCapture 失败，继续使用常规拖动：", error);
+  }
 }
 
-export function handleDragMove(event: MouseEvent): void {
+export function handleDragMove(event: PointerEvent): void {
   if (!state.dragging || !state.isOpen) return;
+  if (state.activeDragPointerId !== null && event.pointerId !== state.activeDragPointerId) return;
 
   event.preventDefault();
 
@@ -707,12 +737,40 @@ export function handleDragMove(event: MouseEvent): void {
   scheduleDragTransformApply();
 }
 
-export function handleDragEnd(): void {
-  if (!state.dragging) return;
+export function handleDragEnd(event?: Event): void {
+  const pointerEvent = event instanceof PointerEvent ? event : null;
+
+  if (!state.dragging) {
+    if (pointerEvent && state.activeDragPointerId === pointerEvent.pointerId) {
+      state.activeDragPointerId = null;
+    }
+
+    return;
+  }
+
+  if (
+    pointerEvent &&
+    state.activeDragPointerId !== null &&
+    pointerEvent.pointerId !== state.activeDragPointerId
+  ) {
+    return;
+  }
 
   state.dragging = false;
   cancelScheduledDragTransform();
   applyTransform();
+
+  if (refs.image && state.activeDragPointerId !== null) {
+    try {
+      if (refs.image.hasPointerCapture(state.activeDragPointerId)) {
+        refs.image.releasePointerCapture(state.activeDragPointerId);
+      }
+    } catch (error) {
+      logDebug("releasePointerCapture 失败：", error);
+    }
+  }
+
+  state.activeDragPointerId = null;
 
   if (refs.overlay) refs.overlay.classList.remove("is-dragging");
   if (refs.image) refs.image.style.cursor = "grab";
@@ -723,7 +781,11 @@ function createImageElement(): HTMLImageElement {
   image.className = "hl-tm-preview-image";
   image.alt = "Image Preview";
 
-  image.addEventListener("mousedown", handleDragStart);
+  image.addEventListener("pointerdown", handleDragStart);
+  image.addEventListener("pointermove", handleDragMove);
+  image.addEventListener("pointerup", handleDragEnd);
+  image.addEventListener("pointercancel", handleDragEnd);
+  image.addEventListener("lostpointercapture", handleDragEnd);
   image.addEventListener("dblclick", (event) => {
     event.preventDefault();
     resetTransform();

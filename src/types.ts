@@ -61,6 +61,7 @@ export interface HoverLensState {
   translateY: number;
 
   dragging: boolean;
+  activeDragPointerId: number | null;
   dragStartX: number;
   dragStartY: number;
   startTranslateX: number;

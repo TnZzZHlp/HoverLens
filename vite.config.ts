@@ -9,7 +9,7 @@ export default defineConfig({
       userscript: {
         name: "HoverLens - CtrlCtrl Image Preview",
         namespace: "https://github.com/TnZzZHlp/hoverlens",
-        version: "1.0.1",
+        version: "1.1.0",
         description: "悬停图片后双击 Ctrl 打开全屏预览，支持滚轮缩放、拖拽、双击重置与快捷关闭。",
         match: ["*://*/*"],
         grant: ["GM_getValue", "GM_setValue", "GM_addValueChangeListener"],

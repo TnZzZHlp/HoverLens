@@ -2,7 +2,7 @@ import { closeAiPanel, bootstrapAiPanel, isAiPanelElement, toggleAiPanel } from 
 import { CONFIG } from "./config";
 import { detectDoubleCtrl, shouldIgnoreHotkey } from "./hotkey";
 import { getImageUrlFromElement } from "./image";
-import { closePreview, createOverlay, handleDragEnd, handleDragMove, openPreview } from "./overlay";
+import { closePreview, createOverlay, handleDragEnd, openPreview } from "./overlay";
 import { state } from "./state";
 import { isElement, logDebug } from "./utils";
 
@@ -116,9 +116,7 @@ function bindGlobalEvents(): void {
   // 快捷键监听
   document.addEventListener("keydown", handleKeydown, true);
 
-  // 拖拽移动/结束
-  window.addEventListener("mousemove", handleDragMove, true);
-  window.addEventListener("mouseup", handleDragEnd, true);
+  // 拖拽结束兜底（窗口失焦 / 页面隐藏）
   window.addEventListener("blur", handleDragEnd, true);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) handleDragEnd();
