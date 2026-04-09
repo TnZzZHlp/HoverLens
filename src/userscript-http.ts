@@ -392,6 +392,7 @@ function requestUserscriptSse(
 
   let aborted = false;
   let buffer = "";
+  let lastResponseText = "";
   let gmRequest: ReturnType<typeof GM_xmlhttpRequest> | null = null;
 
   const cleanup = () => {
@@ -413,32 +414,60 @@ function requestUserscriptSse(
     }
   };
 
-  const processBuffer = () => {
+  const dispatchLine = (line: string) => {
+    const parsed = parseSseLine(line);
+    if (!parsed) {
+      return;
+    }
+
+    if (parsed.event !== null) {
+      callbacks.onEvent?.(parsed.event, "");
+      return;
+    }
+
+    if (parsed.data !== null) {
+      callbacks.onData?.(parsed.data);
+    }
+  };
+
+  const processBuffer = (flushRemainder = false) => {
     if (aborted) return;
 
     while (true) {
       const lineEndIndex = buffer.indexOf("\n");
       if (lineEndIndex < 0) {
+        if (flushRemainder && buffer) {
+          const remainingLine = buffer;
+          buffer = "";
+          dispatchLine(remainingLine);
+        }
         break;
       }
 
       const line = buffer.slice(0, lineEndIndex);
       buffer = buffer.slice(lineEndIndex + 1);
 
-      const parsed = parseSseLine(line);
-      if (!parsed) {
-        continue;
-      }
-
-      if (parsed.event !== null) {
-        callbacks.onEvent?.(parsed.event, "");
-        continue;
-      }
-
-      if (parsed.data !== null) {
-        callbacks.onData?.(parsed.data);
-      }
+      dispatchLine(line);
     }
+  };
+
+  const appendResponseText = (responseText?: string) => {
+    const nextResponseText = responseText ?? "";
+    if (!nextResponseText) {
+      return;
+    }
+
+    const newText = nextResponseText.startsWith(lastResponseText)
+      ? nextResponseText.slice(lastResponseText.length)
+      : nextResponseText;
+
+    lastResponseText = nextResponseText;
+    if (!newText) {
+      return;
+    }
+
+    buffer += newText;
+    processBuffer();
   };
 
   const promise = new Promise<void>((resolve, reject) => {
@@ -450,10 +479,11 @@ function requestUserscriptSse(
       timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
       anonymous: options.anonymous ?? true,
       responseType: "text",
-      onload: () => {
+      onload: (event) => {
         if (aborted) return;
         cleanup();
-        processBuffer();
+        appendResponseText(event.responseText);
+        processBuffer(true);
         callbacks.onComplete?.();
         resolve();
       },
@@ -482,13 +512,7 @@ function requestUserscriptSse(
       onprogress: (event) => {
         if (aborted) return;
 
-        const newText = event.responseText?.slice(buffer.length) ?? "";
-        if (!newText) {
-          return;
-        }
-
-        buffer += newText;
-        processBuffer();
+        appendResponseText(event.responseText);
       },
     });
 
