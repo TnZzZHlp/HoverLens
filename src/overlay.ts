@@ -4,6 +4,7 @@ import { CONFIG } from "./config";
 import MarkdownIt from "markdown-it";
 import { refs, state } from "./state";
 import type { AiImageTaskType, AiInlineImagePayload } from "./types";
+import { fetchInlineImagePayloadViaUserscript } from "./userscript-http";
 import { clamp, logDebug, normalizeImageUrl } from "./utils";
 
 const AI_RESULT_VISIBLE_CLASS = "is-visible";
@@ -86,79 +87,8 @@ function getAiTaskSuccessMessage(taskType: AiImageTaskType): string {
   return taskType === "explain" ? "图片解释完成。" : "图片翻译完成。";
 }
 
-function inferMimeTypeFromUrl(imageUrl: string): string {
-  const cleanUrl = imageUrl.split("?")[0].split("#")[0].toLowerCase();
-
-  if (cleanUrl.endsWith(".png")) return "image/png";
-  if (cleanUrl.endsWith(".webp")) return "image/webp";
-  if (cleanUrl.endsWith(".gif")) return "image/gif";
-  if (cleanUrl.endsWith(".bmp")) return "image/bmp";
-  if (cleanUrl.endsWith(".svg")) return "image/svg+xml";
-  if (cleanUrl.endsWith(".jpg") || cleanUrl.endsWith(".jpeg")) return "image/jpeg";
-
-  return "image/jpeg";
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("图片编码失败。"));
-    };
-
-    reader.onerror = () => {
-      reject(new Error("图片编码失败。"));
-    };
-
-    reader.readAsDataURL(blob);
-  });
-}
-
 async function fetchInlineImagePayload(imageUrl: string): Promise<AiInlineImagePayload> {
-  let response: Response;
-
-  try {
-    response = await fetch(imageUrl, {
-      method: "GET",
-      mode: "cors",
-      credentials: "omit",
-    });
-  } catch {
-    throw new Error("无法读取图片内容，可能被站点跨域限制。请尝试在新标签页打开图片后再试。");
-  }
-
-  if (!response.ok) {
-    throw new Error(`图片加载失败（HTTP ${response.status}）。`);
-  }
-
-  const imageBlob = await response.blob();
-  if (imageBlob.size <= 0) {
-    throw new Error("图片数据为空，无法解析。");
-  }
-
-  const mimeType = imageBlob.type || inferMimeTypeFromUrl(imageUrl);
-  if (!/^image\//i.test(mimeType)) {
-    throw new Error("当前资源不是有效图片格式，暂不支持解释/翻译。");
-  }
-
-  const dataUrl = await blobToDataUrl(imageBlob);
-  const commaIndex = dataUrl.indexOf(",");
-  const base64Data = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1).trim() : "";
-
-  if (!base64Data) {
-    throw new Error("图片编码失败，未获取到有效数据。");
-  }
-
-  return {
-    mimeType,
-    base64Data,
-  };
+  return fetchInlineImagePayloadViaUserscript(imageUrl, activeAiTaskAbortController?.signal);
 }
 
 function getOverlayAiElements(overlay: HTMLDivElement): OverlayAiElements | null {

@@ -1,13 +1,52 @@
-import {
-  GoogleGenAI,
-  type GenerateContentConfig,
-  type GenerateContentParameters,
-  type Tool,
-} from "@google/genai";
 import { CONFIG } from "./config";
 import { state } from "./state";
 import type { AiConfig, AiImageTaskType, AiInlineImagePayload } from "./types";
+import { buildGoogleGenAiEndpoint, requestUserscriptJson, requestUserscriptSseStream } from "./userscript-http";
 import { clamp, logDebug } from "./utils";
+
+interface GoogleGenAiTextPart {
+  text: string;
+}
+
+interface GoogleGenAiInlineDataPart {
+  inlineData: {
+    mimeType: string;
+    data: string;
+  };
+}
+
+type GoogleGenAiPart = GoogleGenAiTextPart | GoogleGenAiInlineDataPart;
+
+interface GoogleGenAiContent {
+  role?: string;
+  parts: GoogleGenAiPart[];
+}
+
+interface GoogleGenAiTool {
+  googleSearch: Record<string, never>;
+}
+
+interface GoogleGenAiRequestBody {
+  contents: GoogleGenAiContent[];
+  generationConfig: {
+    temperature: number;
+  };
+  systemInstruction?: GoogleGenAiContent;
+  tools?: GoogleGenAiTool[];
+}
+
+interface GoogleGenAiResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+}
 
 const IMAGE_TASK_PROMPTS: Record<AiImageTaskType, string> = {
   explain: [
@@ -50,7 +89,7 @@ function resolveAiConfig(overrides?: Partial<AiConfig>): AiConfig {
   return sanitizeConfig(merged);
 }
 
-function buildGoogleSearchGroundingTools(config: AiConfig): Tool[] | undefined {
+function buildGoogleSearchGroundingTools(config: AiConfig): GoogleGenAiTool[] | undefined {
   if (!config.enableGoogleSearchGrounding) return undefined;
 
   return [
@@ -107,27 +146,51 @@ function mergeStreamText(previous: string, incoming: string): string {
   return `${previous}${incoming}`;
 }
 
+function buildGoogleGenAiRequestBody(contents: GoogleGenAiContent[], config: AiConfig): GoogleGenAiRequestBody {
+  const tools = buildGoogleSearchGroundingTools(config);
+
+  return {
+    contents,
+    generationConfig: {
+      temperature: config.temperature,
+    },
+    ...(config.systemPrompt
+      ? {
+          systemInstruction: {
+            parts: [
+              {
+                text: config.systemPrompt,
+              },
+            ],
+          },
+        }
+      : {}),
+    ...(tools ? { tools } : {}),
+  };
+}
+
 export function buildGoogleGenAiRequest(
   contents: string,
   config: AiConfig,
-): GenerateContentParameters {
+): GoogleGenAiRequestBody {
   const prompt = contents.trim();
   if (!prompt) {
     throw new Error("Google GenAI 请求内容不能为空。");
   }
 
-  const tools = buildGoogleSearchGroundingTools(config);
-  const requestConfig: GenerateContentConfig = {
-    temperature: config.temperature,
-    ...(config.systemPrompt ? { systemInstruction: config.systemPrompt } : {}),
-    ...(tools ? { tools } : {}),
-  };
-
-  return {
-    model: config.model,
-    contents: prompt,
-    config: requestConfig,
-  };
+  return buildGoogleGenAiRequestBody(
+    [
+      {
+        role: "user",
+        parts: [
+          {
+            text: prompt,
+          },
+        ],
+      },
+    ],
+    config,
+  );
 }
 
 export function buildGoogleGenAiImageRequest(
@@ -135,22 +198,12 @@ export function buildGoogleGenAiImageRequest(
   taskType: AiImageTaskType,
   config: AiConfig,
   extraPrompt?: string,
-  abortSignal?: AbortSignal,
-): GenerateContentParameters {
+): GoogleGenAiRequestBody {
   const safeImage = sanitizeInlineImagePayload(image);
   const prompt = buildImageTaskPrompt(taskType, extraPrompt);
 
-  const tools = buildGoogleSearchGroundingTools(config);
-  const requestConfig: GenerateContentConfig = {
-    temperature: config.temperature,
-    ...(abortSignal ? { abortSignal } : {}),
-    ...(config.systemPrompt ? { systemInstruction: config.systemPrompt } : {}),
-    ...(tools ? { tools } : {}),
-  };
-
-  return {
-    model: config.model,
-    contents: [
+  return buildGoogleGenAiRequestBody(
+    [
       {
         role: "user",
         parts: [
@@ -166,36 +219,72 @@ export function buildGoogleGenAiImageRequest(
         ],
       },
     ],
-    config: requestConfig,
-  };
+    config,
+  );
 }
 
-function createGoogleGenAiClient(config: AiConfig): GoogleGenAI {
+function ensureGoogleGenAiConfig(config: AiConfig): void {
   if (!config.apiKey) {
     throw new Error("Google GenAI API Key 为空，请先在 AI 设置中填写 API Key。");
   }
+}
 
-  const httpOptions = config.baseUrl
-    ? {
-        baseUrl: config.baseUrl,
-      }
-    : undefined;
+function extractGoogleGenAiText(response: GoogleGenAiResponse): string {
+  const firstCandidate = response.candidates?.[0];
+  const parts = firstCandidate?.content?.parts;
+  if (!Array.isArray(parts) || parts.length <= 0) {
+    return "";
+  }
 
-  return new GoogleGenAI({
-    apiKey: config.apiKey,
-    ...(httpOptions ? { httpOptions } : {}),
-  });
+  return parts
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+}
+
+function extractGoogleGenAiErrorMessage(status: number, response: GoogleGenAiResponse | null): string {
+  const serviceMessage = response?.error?.message?.trim();
+  if (serviceMessage) {
+    return serviceMessage;
+  }
+
+  if (status === 401 || status === 403) {
+    return "Google GenAI 鉴权失败，请检查 API Key 是否有效且已开通对应模型权限。";
+  }
+
+  if (status === 429) {
+    return "Google GenAI 请求过于频繁，请稍后重试。";
+  }
+
+  return `Google GenAI 请求失败（HTTP ${status}）。`;
 }
 
 async function executeGoogleGenAiRequest(
-  request: GenerateContentParameters,
+  requestBody: GoogleGenAiRequestBody,
   config: AiConfig,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
-  const client = createGoogleGenAiClient(config);
+  ensureGoogleGenAiConfig(config);
+
+  const url = buildGoogleGenAiEndpoint(config.baseUrl, config.model);
 
   try {
-    const response = await client.models.generateContent(request);
-    return response.text?.trim() ?? "";
+    const response = await requestUserscriptJson<GoogleGenAiResponse>({
+      method: "POST",
+      url,
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": config.apiKey,
+      },
+      data: JSON.stringify(requestBody),
+      signal: abortSignal,
+    });
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(extractGoogleGenAiErrorMessage(response.status, response.response ?? null));
+    }
+
+    return extractGoogleGenAiText(response.response ?? {});
   } catch (error) {
     logDebug("Google GenAI 请求失败：", error);
     throw error instanceof Error ? error : new Error("Google GenAI 请求失败。");
@@ -203,33 +292,114 @@ async function executeGoogleGenAiRequest(
 }
 
 interface ExecuteGoogleGenAiStreamRequestOptions {
-  request: GenerateContentParameters;
+  request: GoogleGenAiRequestBody;
   config: AiConfig;
+  abortSignal?: AbortSignal;
   onChunk?: (aggregatedText: string, chunkText: string) => void;
+}
+
+interface GoogleGenAiStreamChunk {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
+function extractGoogleGenAiStreamChunkText(chunk: GoogleGenAiStreamChunk): string {
+  const firstCandidate = chunk.candidates?.[0];
+  const parts = firstCandidate?.content?.parts;
+  if (!Array.isArray(parts) || parts.length <= 0) {
+    return "";
+  }
+
+  return parts
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
 }
 
 async function executeGoogleGenAiStreamRequest(
   options: ExecuteGoogleGenAiStreamRequestOptions,
 ): Promise<string> {
-  const client = createGoogleGenAiClient(options.config);
+  ensureGoogleGenAiConfig(options.config);
 
-  try {
-    const stream = await client.models.generateContentStream(options.request);
-    let aggregatedText = "";
+  const url = buildGoogleGenAiEndpoint(options.config.baseUrl, options.config.model, true);
 
-    for await (const chunk of stream) {
-      const chunkText = chunk.text ?? "";
-      if (!chunkText) continue;
+  let aggregatedText = "";
+  let lastError: Error | null = null;
+
+  const handle = requestUserscriptSseStream(
+    {
+      method: "POST",
+      url,
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": options.config.apiKey,
+      },
+      data: JSON.stringify(options.request),
+      signal: options.abortSignal,
+    },
+    (data) => {
+      let chunk: GoogleGenAiStreamChunk;
+      try {
+        chunk = JSON.parse(data) as GoogleGenAiStreamChunk;
+      } catch {
+        return;
+      }
+
+      if (chunk.error) {
+        const message = chunk.error.message?.trim() || "Google GenAI 流式请求返回错误。";
+        lastError = new Error(message);
+        handle.abort();
+        return;
+      }
+
+      const chunkText = extractGoogleGenAiStreamChunkText(chunk);
+      if (!chunkText) return;
 
       aggregatedText = mergeStreamText(aggregatedText, chunkText);
       options.onChunk?.(aggregatedText, chunkText);
+    },
+  );
+
+  if (options.abortSignal) {
+    if (options.abortSignal.aborted) {
+      handle.abort();
+      throw new DOMException("The operation was aborted.", "AbortError");
     }
 
-    return aggregatedText.trim();
+    options.abortSignal.addEventListener(
+      "abort",
+      () => {
+        handle.abort();
+      },
+      { once: true },
+    );
+  }
+
+  try {
+    await handle.promise;
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+
     logDebug("Google GenAI 流式请求失败：", error);
     throw error instanceof Error ? error : new Error("Google GenAI 流式请求失败。");
   }
+
+  if (lastError) {
+    logDebug("Google GenAI 流式请求返回错误：", lastError);
+    throw lastError;
+  }
+
+  return aggregatedText.trim();
 }
 
 export async function generateWithGoogleGenAi(
@@ -293,12 +463,12 @@ export async function generateImageTaskStreamWithConfiguredAi(
       options.taskType,
       resolvedConfig,
       options.extraPrompt,
-      options.abortSignal,
     );
 
     return executeGoogleGenAiStreamRequest({
       request,
       config: resolvedConfig,
+      abortSignal: options.abortSignal,
       onChunk: options.onChunk,
     });
   }
