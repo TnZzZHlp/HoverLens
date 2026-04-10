@@ -6,7 +6,7 @@ interface UserscriptRequestOptions {
   url: string;
   headers?: Record<string, string>;
   data?: BodyInit | null;
-  responseType?: "text" | "json" | "arraybuffer" | "blob";
+  responseType?: "text" | "json" | "arraybuffer" | "blob" | "stream";
   timeout?: number;
   anonymous?: boolean;
   signal?: AbortSignal;
@@ -128,7 +128,10 @@ function decodeDataUrlImage(imageUrl: string): AiInlineImagePayload | null {
 
   const metadata = imageUrl.slice(5, commaIndex);
   const dataPart = imageUrl.slice(commaIndex + 1);
-  const metadataParts = metadata.split(";").map((item) => item.trim()).filter(Boolean);
+  const metadataParts = metadata
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const mimeType = normalizeMimeType(metadataParts[0] ?? null) ?? "text/plain";
 
   if (!/^image\//i.test(mimeType)) {
@@ -138,13 +141,15 @@ function decodeDataUrlImage(imageUrl: string): AiInlineImagePayload | null {
   const isBase64 = metadataParts.some((item) => item.toLowerCase() === "base64");
   const base64Data = isBase64
     ? dataPart.replace(/\s+/g, "")
-    : textToBase64((() => {
-        try {
-          return decodeURIComponent(dataPart);
-        } catch {
-          return dataPart;
-        }
-      })());
+    : textToBase64(
+        (() => {
+          try {
+            return decodeURIComponent(dataPart);
+          } catch {
+            return dataPart;
+          }
+        })(),
+      );
 
   if (!base64Data) {
     throw new Error("图片编码失败，未获取到有效数据。");
@@ -156,7 +161,10 @@ function decodeDataUrlImage(imageUrl: string): AiInlineImagePayload | null {
   };
 }
 
-function blobToInlineImagePayload(blob: Blob, fallbackMimeType: string): Promise<AiInlineImagePayload> {
+function blobToInlineImagePayload(
+  blob: Blob,
+  fallbackMimeType: string,
+): Promise<AiInlineImagePayload> {
   const mimeType = normalizeMimeType(blob.type) ?? fallbackMimeType;
   if (!/^image\//i.test(mimeType)) {
     throw new Error("当前资源不是有效图片格式，暂不支持解释/翻译。");
@@ -235,7 +243,9 @@ function userscriptRequest<TResponse>(
   options: UserscriptRequestOptions,
 ): Promise<UserscriptResponse<TResponse>> {
   if (typeof GM_xmlhttpRequest !== "function") {
-    throw new Error("当前脚本环境不支持 GM_xmlhttpRequest。请确认已在用户脚本管理器中安装并授予权限。");
+    throw new Error(
+      "当前脚本环境不支持 GM_xmlhttpRequest。请确认已在用户脚本管理器中安装并授予权限。",
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -324,7 +334,9 @@ export function buildGoogleGenAiEndpoint(baseUrl: string, model: string, stream?
   const versionedBaseUrl = /\/v\d+(alpha|beta)?$/i.test(trimmedBaseUrl)
     ? trimmedBaseUrl
     : `${trimmedBaseUrl}/v1beta`;
-  const normalizedModel = model.trim().startsWith("models/") ? model.trim() : `models/${model.trim()}`;
+  const normalizedModel = model.trim().startsWith("models/")
+    ? model.trim()
+    : `models/${model.trim()}`;
   const encodedModel = normalizedModel
     .split("/")
     .map((segment) => encodeURIComponent(segment))
@@ -336,33 +348,11 @@ export function buildGoogleGenAiEndpoint(baseUrl: string, model: string, stream?
   return `${versionedBaseUrl}/${encodedModel}:${method}${query}`;
 }
 
-function parseSseLine(line: string): { event: string | null; data: string | null } | null {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (trimmed.startsWith(":")) {
-    return null;
-  }
-
-  const colonIndex = trimmed.indexOf(":");
-  if (colonIndex < 0) {
-    return null;
-  }
-
-  const field = trimmed.slice(0, colonIndex).trim();
-  const value = trimmed.slice(colonIndex + 1).trim();
-
-  if (field === "event") {
-    return { event: value, data: null };
-  }
-
-  if (field === "data") {
-    return { event: null, data: value };
-  }
-
-  return null;
+function buildHttpErrorMessage(status: number, statusText?: string): string {
+  const normalizedStatus = normalizeHttpStatus(status);
+  return normalizedStatus
+    ? `请求失败（HTTP ${normalizedStatus} ${statusText || ""}）。`.trim()
+    : "请求失败，可能未被用户脚本管理器授权访问该域名。";
 }
 
 interface UserscriptSseCallbacks {
@@ -377,12 +367,115 @@ interface UserscriptSseHandle {
   promise: Promise<void>;
 }
 
+interface SseTextParser {
+  pushText: (text: string) => void;
+  flush: () => void;
+}
+
+function createSseTextParser(callbacks: UserscriptSseCallbacks): SseTextParser {
+  let buffer = "";
+  let eventName = "message";
+  let dataLines: string[] = [];
+
+  const emitEvent = () => {
+    if (dataLines.length <= 0) {
+      eventName = "message";
+      return;
+    }
+
+    const eventData = dataLines.join("\n");
+    callbacks.onEvent?.(eventName, eventData);
+    callbacks.onData?.(eventData);
+
+    eventName = "message";
+    dataLines = [];
+  };
+
+  const consumeLine = (line: string) => {
+    const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (!normalizedLine) {
+      emitEvent();
+      return;
+    }
+
+    if (normalizedLine.startsWith(":")) {
+      return;
+    }
+
+    const separatorIndex = normalizedLine.indexOf(":");
+    const field = separatorIndex >= 0 ? normalizedLine.slice(0, separatorIndex) : normalizedLine;
+    let value = separatorIndex >= 0 ? normalizedLine.slice(separatorIndex + 1) : "";
+
+    // SSE 规范：冒号后首个空格需忽略
+    if (value.startsWith(" ")) {
+      value = value.slice(1);
+    }
+
+    if (field === "event") {
+      eventName = value || "message";
+      return;
+    }
+
+    if (field === "data") {
+      dataLines.push(value);
+    }
+  };
+
+  const processBuffer = (flushRemainder = false) => {
+    while (true) {
+      const lineEndIndex = buffer.indexOf("\n");
+      if (lineEndIndex < 0) {
+        break;
+      }
+
+      const line = buffer.slice(0, lineEndIndex);
+      buffer = buffer.slice(lineEndIndex + 1);
+      consumeLine(line);
+    }
+
+    if (flushRemainder) {
+      if (buffer) {
+        consumeLine(buffer);
+        buffer = "";
+      }
+
+      emitEvent();
+    }
+  };
+
+  return {
+    pushText: (text: string) => {
+      if (!text) return;
+      buffer += text;
+      processBuffer(false);
+    },
+    flush: () => {
+      processBuffer(true);
+    },
+  };
+}
+
+function asReadableUint8Stream(value: unknown): ReadableStream<Uint8Array> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const stream = value as ReadableStream<Uint8Array>;
+  if (typeof stream.getReader !== "function") {
+    return null;
+  }
+
+  return stream;
+}
+
 function requestUserscriptSse(
   options: UserscriptRequestOptions,
   callbacks: UserscriptSseCallbacks,
 ): UserscriptSseHandle {
   if (typeof GM_xmlhttpRequest !== "function") {
-    const error = new Error("当前脚本环境不支持 GM_xmlhttpRequest。请确认已在用户脚本管理器中安装并授予权限。");
+    const error = new Error(
+      "当前脚本环境不支持 GM_xmlhttpRequest。请确认已在用户脚本管理器中安装并授予权限。",
+    );
     callbacks.onError?.(error);
     return {
       abort: () => {},
@@ -390,10 +483,17 @@ function requestUserscriptSse(
     };
   }
 
+  let settled = false;
   let aborted = false;
-  let buffer = "";
+  let usingReadableStream = false;
   let lastResponseText = "";
   let gmRequest: ReturnType<typeof GM_xmlhttpRequest> | null = null;
+  let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+  const parser = createSseTextParser(callbacks);
+
+  let resolvePromise: (() => void) | null = null;
+  let rejectPromise: ((error: Error) => void) | null = null;
 
   const cleanup = () => {
     if (options.signal) {
@@ -401,10 +501,33 @@ function requestUserscriptSse(
     }
   };
 
+  const settleResolve = () => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    callbacks.onComplete?.();
+    resolvePromise?.();
+  };
+
+  const settleReject = (error: Error) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    callbacks.onError?.(error);
+    rejectPromise?.(error);
+  };
+
   const handleAbortSignal = () => {
     if (aborted) return;
+
     aborted = true;
-    cleanup();
+
+    if (streamReader) {
+      void streamReader.cancel().catch(() => {
+        // ignore
+      });
+    }
+
     if (gmRequest) {
       try {
         gmRequest.abort();
@@ -412,46 +535,13 @@ function requestUserscriptSse(
         // ignore
       }
     }
-  };
 
-  const dispatchLine = (line: string) => {
-    const parsed = parseSseLine(line);
-    if (!parsed) {
-      return;
-    }
-
-    if (parsed.event !== null) {
-      callbacks.onEvent?.(parsed.event, "");
-      return;
-    }
-
-    if (parsed.data !== null) {
-      callbacks.onData?.(parsed.data);
-    }
-  };
-
-  const processBuffer = (flushRemainder = false) => {
-    if (aborted) return;
-
-    while (true) {
-      const lineEndIndex = buffer.indexOf("\n");
-      if (lineEndIndex < 0) {
-        if (flushRemainder && buffer) {
-          const remainingLine = buffer;
-          buffer = "";
-          dispatchLine(remainingLine);
-        }
-        break;
-      }
-
-      const line = buffer.slice(0, lineEndIndex);
-      buffer = buffer.slice(lineEndIndex + 1);
-
-      dispatchLine(line);
-    }
+    settleReject(createAbortError());
   };
 
   const appendResponseText = (responseText?: string) => {
+    if (aborted || settled) return;
+
     const nextResponseText = responseText ?? "";
     if (!nextResponseText) {
       return;
@@ -466,51 +556,140 @@ function requestUserscriptSse(
       return;
     }
 
-    buffer += newText;
-    processBuffer();
+    parser.pushText(newText);
+  };
+
+  const consumeReadableStream = (stream: ReadableStream<Uint8Array>) => {
+    if (aborted || settled) {
+      return;
+    }
+
+    usingReadableStream = true;
+    streamReader = stream.getReader();
+    const textDecoder = new TextDecoder();
+
+    void (async () => {
+      try {
+        while (!aborted && !settled) {
+          const { done, value } = await streamReader.read();
+          if (done) {
+            break;
+          }
+
+          if (value && value.byteLength > 0) {
+            const chunkText = textDecoder.decode(value, { stream: true });
+            if (chunkText) {
+              parser.pushText(chunkText);
+            }
+          }
+        }
+
+        if (aborted || settled) {
+          return;
+        }
+
+        const tailText = textDecoder.decode();
+        if (tailText) {
+          parser.pushText(tailText);
+        }
+
+        parser.flush();
+        settleResolve();
+      } catch (error) {
+        if (aborted || settled) {
+          return;
+        }
+
+        const streamError = error instanceof Error ? error : new Error("读取流式响应失败。");
+        settleReject(streamError);
+      } finally {
+        try {
+          streamReader?.releaseLock();
+        } catch {
+          // ignore
+        }
+
+        streamReader = null;
+      }
+    })();
   };
 
   const promise = new Promise<void>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = (error: Error) => {
+      reject(error);
+    };
+
     gmRequest = GM_xmlhttpRequest({
       method: options.method ?? "POST",
       url: options.url,
       headers: options.headers,
       data: options.data ?? undefined,
       timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
-      anonymous: options.anonymous ?? true,
-      responseType: "text",
+      anonymous: options.anonymous ?? false,
+      responseType: "stream",
+      onloadstart: (event) => {
+        if (aborted || settled || usingReadableStream) {
+          return;
+        }
+
+        const stream = asReadableUint8Stream(event.response);
+        if (!stream) {
+          return;
+        }
+
+        consumeReadableStream(stream);
+      },
       onload: (event) => {
-        if (aborted) return;
-        cleanup();
+        if (aborted || settled) {
+          return;
+        }
+
+        const status = normalizeHttpStatus(event.status);
+        if (status && (status < 200 || status >= 300)) {
+          settleReject(new Error(buildHttpErrorMessage(status, event.statusText)));
+          return;
+        }
+
+        if (usingReadableStream) {
+          // 某些实现会先触发 onload，再结束 stream reader；由 reader 负责最终 resolve。
+          if (!streamReader) {
+            appendResponseText(event.responseText);
+            parser.flush();
+            settleResolve();
+          }
+          return;
+        }
+
         appendResponseText(event.responseText);
-        processBuffer(true);
-        callbacks.onComplete?.();
-        resolve();
+        parser.flush();
+        settleResolve();
       },
       onerror: (event) => {
-        if (aborted) return;
-        cleanup();
-        const status = normalizeHttpStatus(event.status);
-        const message = status
-          ? `请求失败（HTTP ${status} ${event.statusText || ""}）。`.trim()
-          : "请求失败，可能未被用户脚本管理器授权访问该域名。";
-        const error = new Error(message);
-        callbacks.onError?.(error);
-        reject(error);
+        if (aborted || settled) {
+          return;
+        }
+
+        settleReject(new Error(buildHttpErrorMessage(event.status, event.statusText)));
       },
       ontimeout: () => {
-        if (aborted) return;
-        cleanup();
-        const error = new Error("请求超时，请稍后重试。");
-        callbacks.onError?.(error);
-        reject(error);
+        if (aborted || settled) {
+          return;
+        }
+
+        settleReject(new Error("请求超时，请稍后重试。"));
       },
       onabort: () => {
+        if (settled) {
+          return;
+        }
+
         handleAbortSignal();
-        resolve();
       },
       onprogress: (event) => {
-        if (aborted) return;
+        if (aborted || settled || usingReadableStream) {
+          return;
+        }
 
         appendResponseText(event.responseText);
       },
@@ -519,7 +698,6 @@ function requestUserscriptSse(
     if (options.signal) {
       if (options.signal.aborted) {
         handleAbortSignal();
-        resolve();
         return;
       }
 
@@ -592,7 +770,9 @@ export async function fetchInlineImagePayloadViaUserscript(
     throw new Error("图片数据为空，无法解析。");
   }
 
-  const contentTypeHeader = normalizeMimeType(getResponseHeader(response.responseHeaders, "content-type"));
+  const contentTypeHeader = normalizeMimeType(
+    getResponseHeader(response.responseHeaders, "content-type"),
+  );
   const mimeType =
     contentTypeHeader && contentTypeHeader !== "application/octet-stream"
       ? contentTypeHeader
