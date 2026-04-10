@@ -1,7 +1,11 @@
 import { CONFIG } from "./config";
 import { state } from "./state";
 import type { AiConfig, AiImageTaskType, AiInlineImagePayload } from "./types";
-import { buildGoogleGenAiEndpoint, requestUserscriptJson, requestUserscriptSseStream } from "./userscript-http";
+import {
+  buildGoogleGenAiEndpoint,
+  requestUserscriptJson,
+  requestUserscriptSseStream,
+} from "./userscript-http";
 import { clamp, logDebug } from "./utils";
 
 interface GoogleGenAiTextPart {
@@ -146,7 +150,10 @@ function mergeStreamText(previous: string, incoming: string): string {
   return `${previous}${incoming}`;
 }
 
-function buildGoogleGenAiRequestBody(contents: GoogleGenAiContent[], config: AiConfig): GoogleGenAiRequestBody {
+function buildGoogleGenAiRequestBody(
+  contents: GoogleGenAiContent[],
+  config: AiConfig,
+): GoogleGenAiRequestBody {
   const tools = buildGoogleSearchGroundingTools(config);
 
   return {
@@ -242,7 +249,10 @@ function extractGoogleGenAiText(response: GoogleGenAiResponse): string {
     .trim();
 }
 
-function extractGoogleGenAiErrorMessage(status: number, response: GoogleGenAiResponse | null): string {
+function extractGoogleGenAiErrorMessage(
+  status: number,
+  response: GoogleGenAiResponse | null,
+): string {
   const serviceMessage = response?.error?.message?.trim();
   if (serviceMessage) {
     return serviceMessage;
@@ -386,6 +396,10 @@ async function executeGoogleGenAiStreamRequest(
   try {
     await handle.promise;
   } catch (error) {
+    if (lastError) {
+      throw lastError;
+    }
+
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
     }

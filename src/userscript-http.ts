@@ -490,8 +490,6 @@ function requestUserscriptSse(
   let gmRequest: ReturnType<typeof GM_xmlhttpRequest> | null = null;
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-  const parser = createSseTextParser(callbacks);
-
   let resolvePromise: (() => void) | null = null;
   let rejectPromise: ((error: Error) => void) | null = null;
 
@@ -517,11 +515,7 @@ function requestUserscriptSse(
     rejectPromise?.(error);
   };
 
-  const handleAbortSignal = () => {
-    if (aborted) return;
-
-    aborted = true;
-
+  const stopTransport = () => {
     if (streamReader) {
       void streamReader.cancel().catch(() => {
         // ignore
@@ -535,6 +529,35 @@ function requestUserscriptSse(
         // ignore
       }
     }
+  };
+
+  const finishByDoneSignal = () => {
+    if (aborted || settled) return;
+
+    settleResolve();
+    stopTransport();
+  };
+
+  const parser = createSseTextParser({
+    onEvent: (event, data) => {
+      callbacks.onEvent?.(event, data);
+    },
+    onData: (data) => {
+      if (data.trim() === "[DONE]") {
+        finishByDoneSignal();
+        return;
+      }
+
+      callbacks.onData?.(data);
+    },
+  });
+
+  const handleAbortSignal = () => {
+    if (aborted) return;
+
+    aborted = true;
+
+    stopTransport();
 
     settleReject(createAbortError());
   };
