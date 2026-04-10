@@ -515,6 +515,17 @@ function requestUserscriptSse(
     rejectPromise?.(error);
   };
 
+  const finalizeSuccess = (responseText?: string) => {
+    if (aborted || settled) {
+      return;
+    }
+
+    appendResponseText(responseText);
+    parser.flush();
+    settleResolve();
+    stopTransport();
+  };
+
   const stopTransport = () => {
     if (streamReader) {
       void streamReader.cancel().catch(() => {
@@ -534,8 +545,7 @@ function requestUserscriptSse(
   const finishByDoneSignal = () => {
     if (aborted || settled) return;
 
-    settleResolve();
-    stopTransport();
+    finalizeSuccess();
   };
 
   const parser = createSseTextParser({
@@ -595,6 +605,10 @@ function requestUserscriptSse(
       try {
         while (!aborted && !settled) {
           const { done, value } = await streamReader.read();
+          if (aborted || settled) {
+            return;
+          }
+
           if (done) {
             break;
           }
@@ -602,6 +616,10 @@ function requestUserscriptSse(
           if (value && value.byteLength > 0) {
             const chunkText = textDecoder.decode(value, { stream: true });
             if (chunkText) {
+              if (aborted || settled) {
+                return;
+              }
+
               parser.pushText(chunkText);
             }
           }
@@ -616,8 +634,7 @@ function requestUserscriptSse(
           parser.pushText(tailText);
         }
 
-        parser.flush();
-        settleResolve();
+        finalizeSuccess();
       } catch (error) {
         if (aborted || settled) {
           return;
@@ -674,19 +691,15 @@ function requestUserscriptSse(
           return;
         }
 
-        if (usingReadableStream) {
-          // 某些实现会先触发 onload，再结束 stream reader；由 reader 负责最终 resolve。
-          if (!streamReader) {
-            appendResponseText(event.responseText);
-            parser.flush();
-            settleResolve();
-          }
+        finalizeSuccess(event.responseText);
+      },
+      onloadend: () => {
+        if (aborted || settled) {
           return;
         }
 
-        appendResponseText(event.responseText);
-        parser.flush();
-        settleResolve();
+        // 兜底：部分环境可能未按预期触发 stream reader done 或 onload 完整结算。
+        finalizeSuccess();
       },
       onerror: (event) => {
         if (aborted || settled) {
