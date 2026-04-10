@@ -12,6 +12,7 @@ const AI_STATUS_ERROR_CLASS = "is-error";
 const AI_BUTTON_LOADING_CLASS = "is-loading";
 const AI_BUTTON_CLOSE_CLASS = "is-close";
 const AI_BUTTON_CLOSE_MODE = "close";
+const AI_RESULT_AUTO_FOLLOW_THRESHOLD_PX = 40;
 
 const markdownRenderer = new MarkdownIt({
   html: false,
@@ -128,23 +129,72 @@ function setAiStatus(elements: OverlayAiElements, message: string, isError = fal
   elements.status.classList.toggle(AI_STATUS_ERROR_CLASS, isError);
 }
 
+function normalizeMarkdownHeadings(message: string): string {
+  const lines = message.split(/\r?\n/);
+  const normalizedLines: string[] = [];
+  let insideFenceBlock = false;
+
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      insideFenceBlock = !insideFenceBlock;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (insideFenceBlock) {
+      normalizedLines.push(line);
+      continue;
+    }
+
+    const normalizedAsciiHeading = line.replace(/^(\s{0,3})(#{1,6})([^\s#])/, "$1$2 $3");
+    const normalizedHeading = normalizedAsciiHeading.replace(
+      /^(\s{0,3})(＃{1,6})([^\s＃])/,
+      (_match: string, indent: string, fullWidthHashes: string, headingContentStart: string) =>
+        `${indent}${"#".repeat(fullWidthHashes.length)} ${headingContentStart}`,
+    );
+
+    normalizedLines.push(normalizedHeading);
+  }
+
+  return normalizedLines.join("\n");
+}
+
+function scrollAiResultToBottom(resultElement: HTMLDivElement): void {
+  resultElement.scrollTop = resultElement.scrollHeight;
+}
+
+function isAiResultNearBottom(resultElement: HTMLDivElement): boolean {
+  const distanceToBottom =
+    resultElement.scrollHeight - (resultElement.scrollTop + resultElement.clientHeight);
+
+  return distanceToBottom <= AI_RESULT_AUTO_FOLLOW_THRESHOLD_PX;
+}
+
 function setAiResult(elements: OverlayAiElements, message: string): void {
   const safeMessage = message.trim();
 
   if (!safeMessage) {
     elements.result.innerHTML = "";
     elements.result.classList.remove(AI_RESULT_VISIBLE_CLASS);
+    elements.result.scrollTop = 0;
     return;
   }
 
+  const normalizedMessage = normalizeMarkdownHeadings(safeMessage);
+  const shouldAutoFollow = isAiResultNearBottom(elements.result);
+
   try {
-    elements.result.innerHTML = markdownRenderer.render(safeMessage);
+    elements.result.innerHTML = markdownRenderer.render(normalizedMessage);
   } catch (error) {
     logDebug("Markdown 渲染失败，已回退纯文本：", error);
-    elements.result.textContent = safeMessage;
+    elements.result.textContent = normalizedMessage;
   }
 
   elements.result.classList.add(AI_RESULT_VISIBLE_CLASS);
+
+  if (shouldAutoFollow) {
+    scrollAiResultToBottom(elements.result);
+  }
 }
 
 function cancelScheduledDragTransform(): void {
@@ -328,7 +378,7 @@ function ensureStyle(): void {
   top: calc(env(safe-area-inset-top) + 10px);
   left: 50%;
   transform: translate3d(-50%, 0, 0);
-  width: min(520px, calc(100vw - 20px));
+  width: min(700px, calc(100vw - 20px));
   display: grid;
   gap: 8px;
   justify-items: center;
@@ -457,6 +507,41 @@ function ensureStyle(): void {
 #${CONFIG.overlayId} .hl-tm-ai-result blockquote,
 #${CONFIG.overlayId} .hl-tm-ai-result hr {
   margin: 0.5em 0;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h1,
+#${CONFIG.overlayId} .hl-tm-ai-result h2,
+#${CONFIG.overlayId} .hl-tm-ai-result h3,
+#${CONFIG.overlayId} .hl-tm-ai-result h4,
+#${CONFIG.overlayId} .hl-tm-ai-result h5,
+#${CONFIG.overlayId} .hl-tm-ai-result h6 {
+  margin: 0.7em 0 0.45em;
+  line-height: 1.35;
+  font-weight: 700;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h1 {
+  font-size: 1.45em;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h2 {
+  font-size: 1.32em;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h3 {
+  font-size: 1.22em;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h4 {
+  font-size: 1.13em;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h5 {
+  font-size: 1.05em;
+}
+
+#${CONFIG.overlayId} .hl-tm-ai-result h6 {
+  font-size: 1em;
 }
 
 #${CONFIG.overlayId} .hl-tm-ai-result ul,
